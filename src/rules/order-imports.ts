@@ -4,6 +4,8 @@ import {
 	ValidImportType,
 	KnownImportType,
 	RegExpGroups,
+
+	NodeOrToken // type-only, but "import type" requires Typescript 3.8+
 } from '../util/import-type';
 import { isStaticRequire } from '../util/static-require';
 
@@ -15,7 +17,7 @@ type AlphabetizeConfig = { order: AlphabetizeOption; ignoreCase: boolean };
 const alphabetizeOptions: AlphabetizeOption[] = ['ignore', 'asc', 'desc'];
 
 type Groups = (ValidImportType | ValidImportType[])[];
-const defaultGroups: Groups = ['absolute', 'module', 'parent', 'sibling', 'index'];
+const defaultGroups: Groups = ['absolute', 'module', 'parent', 'sibling', 'index', 'type-only'];
 
 type RuleOptions = {
 	groups?: Groups;
@@ -24,8 +26,6 @@ type RuleOptions = {
 };
 
 type ImportType = 'require' | 'import';
-
-type NodeOrToken = any; // todo;
 
 type Ranks = { [group: string]: number };
 type Imported = { name: string; rank: number; node: NodeOrToken };
@@ -292,14 +292,16 @@ function mutateRanksToAlphabetize(imported, order, ignoreCase) {
 	// add decimal ranking to sort within the group
 	const alphabetizedRanks = groupRanks.sort().reduce(function(acc, groupRank) {
 		groupedByRanks[groupRank].forEach(function(importedItemName, index) {
-			acc[importedItemName] = +groupRank + index / 100;
+			const key = groupRank.toString() + importedItemName;
+			acc[key] = +groupRank + index / 100;
 		});
 		return acc;
 	}, {});
 
 	// mutate the original group-rank with alphabetized-rank
 	imported.forEach(function(importedItem) {
-		importedItem.rank = alphabetizedRanks[importedItem.name];
+		const key = importedItem.rank.toString() + importedItem.name;
+		importedItem.rank = alphabetizedRanks[key];
 	});
 }
 
@@ -311,12 +313,12 @@ function getRegExpGroups(ranks: Ranks): RegExpGroups {
 
 // DETECTING
 
-function computeRank(ranks: Ranks, regExpGroups, name: string, type: ImportType): number {
-	return ranks[determineImportType(name, regExpGroups)] + (type === 'import' ? 0 : 100);
+function computeRank(ranks: Ranks, regExpGroups, node: NodeOrToken, name: string, type: ImportType): number {
+	return ranks[determineImportType(node, name, regExpGroups)] + (type === 'import' ? 0 : 100);
 }
 
 function registerNode(node: NodeOrToken, name: string, type: ImportType, ranks, regExpGroups, imported: Imported[]) {
-	const rank = computeRank(ranks, regExpGroups, name, type);
+	const rank = computeRank(ranks, regExpGroups, node, name, type);
 	if (rank !== -1) {
 		imported.push({ name, rank, node });
 	}
@@ -326,7 +328,7 @@ function isInVariableDeclarator(node: NodeOrToken): boolean {
 	return node && (node.type === 'VariableDeclarator' || isInVariableDeclarator(node.parent));
 }
 
-const knownTypes: KnownImportType[] = ['absolute', 'module', 'parent', 'sibling', 'index'];
+const knownTypes: KnownImportType[] = ['absolute', 'module', 'parent', 'sibling', 'index', 'type-only'];
 
 // Creates an object with type-rank pairs.
 // Example: { index: 0, sibling: 1, parent: 1, module: 2 }
