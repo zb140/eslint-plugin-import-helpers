@@ -14,6 +14,12 @@ type AlphabetizeOption = 'ignore' | 'asc' | 'desc';
 type AlphabetizeConfig = { order: AlphabetizeOption; ignoreCase: boolean };
 const alphabetizeOptions: AlphabetizeOption[] = ['ignore', 'asc', 'desc'];
 
+type KnownOrders = 'name' | 'kind';
+type OrderByItem = { type: KnownOrders, direction?: AlphabetizeOption };
+type SortConfig = { orderBy: (KnownOrders | OrderByItem)[]; ignoreCase: boolean };
+type NormalizedSortConfig = { orderBy: OrderByItem[]; ignoreCase: boolean };
+const sortOrderings: KnownOrders[] = [ 'kind', 'name' ];
+
 type Groups = (ValidImportType | ValidImportType[])[];
 const defaultGroups: Groups = ['absolute', 'module', 'parent', 'sibling', 'index'];
 
@@ -21,6 +27,7 @@ type RuleOptions = {
 	groups?: Groups;
 	newlinesBetween?: NewLinesBetweenOption;
 	alphabetize?: Partial<AlphabetizeConfig>;
+	sort?: Partial<SortConfig>;
 };
 
 type ImportType = 'require' | 'import';
@@ -28,7 +35,10 @@ type ImportType = 'require' | 'import';
 type NodeOrToken = any; // todo;
 
 type Ranks = { [group: string]: number };
-type Imported = { name: string; rank: number; node: NodeOrToken };
+type Kinds = 'value' | 'type';
+type Imported = { name: string; rank: number; kind?: Kinds; node: NodeOrToken };
+
+type Optional<T> = T | undefined;
 
 // REPORTING AND FIXING
 
@@ -269,37 +279,88 @@ function makeOutOfOrderReport(context, imported: Imported[]) {
 	reportOutOfOrder(context, imported, outOfOrder, 'before');
 }
 
-function mutateRanksToAlphabetize(imported, order, ignoreCase) {
+function getComparator(orderBy: OrderByItem[], ignoreCase: boolean) {
+	const fields = orderBy.filter(x => x.direction !== 'ignore');
+
+	const compareKind = function (a: Kinds = 'value', b: Kinds = 'value'): -1 | 0 | 1 {
+		return (a === b)
+				? 0
+				: (a === 'value')
+					? -1
+					: 1
+	}
+
+	const compareString = function (a: string, b: string): number {
+		return ignoreCase
+			? a.localeCompare(b)
+			: a < b
+				? -1
+				: a === b
+					? 0
+					: 1;
+	}
+
+	return function (a: Imported, b: Imported): -1 | 0 | 1 {
+		for (const item of fields) {
+			let current = item.type === 'kind'
+				? compareKind(a.kind, b.kind)
+				: compareString(a.name, b.name)
+
+			if (item.direction === 'desc') {
+				current = -current;
+			}
+
+			if (current !== 0) {
+				return current < 0
+					? -1
+					: current > 0
+						? 1
+						: 0;
+			}
+
+			// otherwise, continue to the next field
+		}
+
+		// if we've gone through all the fields and can't tell the difference,
+		// they're the same.
+		return 0;
+	}
+}
+
+function uniqueKey(item: Imported): string {
+	return item.rank.toString() + item.kind + item.name;
+}
+
+function mutateRanksToSort(imported: Imported[], sortConfig: NormalizedSortConfig) {
 	const groupedByRanks = imported.reduce(function(acc, importedItem) {
 		acc[importedItem.rank] = acc[importedItem.rank] || [];
-		acc[importedItem.rank].push(importedItem.name);
+		acc[importedItem.rank].push(importedItem);
 		return acc;
-	}, {});
+	}, { } as Record<string, Imported[]>);
 
 	const groupRanks = Object.keys(groupedByRanks);
 
 	// sort imports locally within their group
 	groupRanks.forEach(function(groupRank) {
-		groupedByRanks[groupRank].sort(function(importA, importB) {
-			return ignoreCase ? importA.localeCompare(importB) : importA < importB ? -1 : importA === importB ? 0 : 1;
-		});
-
-		if (order === 'desc') {
-			groupedByRanks[groupRank].reverse();
-		}
+		groupedByRanks[groupRank]
+			.sort(
+				getComparator(sortConfig.orderBy, sortConfig.ignoreCase)
+			);
 	});
 
 	// add decimal ranking to sort within the group
-	const alphabetizedRanks = groupRanks.sort().reduce(function(acc, groupRank) {
-		groupedByRanks[groupRank].forEach(function(importedItemName, index) {
-			acc[importedItemName] = +groupRank + index / 100;
+	const sortedRanks = groupRanks.sort().reduce(function(acc, groupRank) {
+		groupedByRanks[groupRank].forEach(function(imported, index) {
+			const key = uniqueKey(imported);
+			acc[key] = +groupRank + index / 100;
 		});
 		return acc;
-	}, {});
+	}, { } as Record<string, number>);
 
 	// mutate the original group-rank with alphabetized-rank
 	imported.forEach(function(importedItem) {
-		importedItem.rank = alphabetizedRanks[importedItem.name];
+		const key = uniqueKey(importedItem);
+		importedItem.rank = sortedRanks[key];
 	});
 }
 
@@ -311,14 +372,14 @@ function getRegExpGroups(ranks: Ranks): RegExpGroups {
 
 // DETECTING
 
-function computeRank(ranks: Ranks, regExpGroups, name: string, type: ImportType): number {
+function computeRank(ranks: Ranks, regExpGroups: RegExpGroups, name: string, type: ImportType): number {
 	return ranks[determineImportType(name, regExpGroups)] + (type === 'import' ? 0 : 100);
 }
 
-function registerNode(node: NodeOrToken, name: string, type: ImportType, ranks, regExpGroups, imported: Imported[]) {
+function registerNode(node: NodeOrToken, name: string, type: ImportType, ranks: Ranks, regExpGroups: RegExpGroups, imported: Imported[]) {
 	const rank = computeRank(ranks, regExpGroups, name, type);
 	if (rank !== -1) {
-		imported.push({ name, rank, node });
+		imported.push({ name, rank, node, kind: node.importKind });
 	}
 }
 
@@ -478,6 +539,66 @@ function getAlphabetizeConfig(options: RuleOptions): AlphabetizeConfig {
 	return { order, ignoreCase };
 }
 
+function getSortConfig(options: RuleOptions): Optional<NormalizedSortConfig> {
+	// eslint's option schema will enforce that no more than one of alphabetize
+	// and sort is provided, so it's safe to ignore options.sort if
+	// options.alphabetize is present.
+	if (options.alphabetize) {
+		const alphabetize = getAlphabetizeConfig(options);
+		if (alphabetize.order === 'ignore') {
+			return;
+		}
+		return {
+			orderBy: [ { type: 'name', direction: alphabetize.order } ],
+			ignoreCase: alphabetize.ignoreCase
+		};
+	}
+
+	if (!options.sort) {
+		return;
+	}
+
+	// validate and return sort config.  eslint has already enforced most of
+	// the schema, but it can't enforce uniqueness of "type" within "orderBy".
+	if (!options.sort.orderBy || !Array.isArray(options.sort.orderBy)) {
+		throw new Error(
+			'Incorrect sort config: orderBy should be ' +
+				'a list of properties, but `' +
+				JSON.stringify(options.sort.orderBy) +
+				'` found instead.'
+		);
+	}
+
+	const found = { };
+	const orderBy: OrderByItem[] = [];
+
+	for (let item of options.sort.orderBy) {
+		if (typeof item === 'string') {
+			item = Object.assign({}, { type: item });
+		}
+
+		if (found[item.type]) {
+			throw new Error(
+				'Incorrect sort config: orderBy types should be ' +
+					'unique, but `' +
+					JSON.stringify(item.type) +
+					'` was duplicated.'
+			);
+		}
+
+		found[item.type] = true;
+		if (item.direction === undefined) {
+			item = Object.assign({}, item, { direction: 'asc' });
+		}
+		if (item.direction !== 'ignore') {
+			orderBy.push(item);
+		}
+	}
+
+	return { orderBy, ignoreCase: !!options.sort.ignoreCase };
+}
+
+
 module.exports = {
 	meta: {
 		type: 'suggestion',
@@ -489,12 +610,43 @@ module.exports = {
 		schema: [
 			{
 				type: 'object',
+				// if sort is provided, alphabetize must not be, and vice versa
+				dependencies: {
+					sort: { not: { required: [ 'alphabetize' ] } },
+					alphabetize: { not: { required: [ 'sort' ] } },
+				},
 				properties: {
 					groups: {
 						type: 'array',
 					},
 					newlinesBetween: {
 						enum: newLinesBetweenOptions,
+					},
+					sort: {
+						type: 'object',
+						properties: {
+							orderBy: {
+								type: 'array',
+								minItems: 1,
+								maxItems: 2,
+								uniqueItems: true,
+								items: {
+									oneOf: [{
+										type: 'object',
+										properties: {
+											type: {
+												enum: sortOrderings
+											},
+											direction: {
+												enum: alphabetizeOptions
+											}
+										}
+									}, {
+										enum: sortOrderings
+									}]
+								}
+							}
+						}
 					},
 					alphabetize: {
 						type: 'object',
@@ -519,12 +671,12 @@ module.exports = {
 		const options: RuleOptions = context.options[0] || {};
 		const newlinesBetweenImports: NewLinesBetweenOption = options.newlinesBetween || 'ignore';
 
-		let alphabetize: AlphabetizeConfig;
+		let sortConfig: Optional<NormalizedSortConfig>;
 		let ranks: Ranks;
 		let regExpGroups: RegExpGroups;
 
 		try {
-			alphabetize = getAlphabetizeConfig(options);
+			sortConfig = getSortConfig(options);
 			ranks = convertGroupsToRanks(options.groups || defaultGroups);
 			regExpGroups = getRegExpGroups(ranks);
 		} catch (error) {
@@ -557,8 +709,8 @@ module.exports = {
 				registerNode(node, name, 'require', ranks, regExpGroups, imported);
 			},
 			'Program:exit': function reportAndReset() {
-				if (alphabetize.order !== 'ignore') {
-					mutateRanksToAlphabetize(imported, alphabetize.order, alphabetize.ignoreCase);
+				if (sortConfig) {
+					mutateRanksToSort(imported, sortConfig);
 				}
 
 				makeOutOfOrderReport(context, imported);

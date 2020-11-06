@@ -20,7 +20,7 @@ ruleTester.run('order', rule, {
 				import async, {foo1} from 'async';
 				import fs from 'fs';
 
-		    	import relParent1 from '../foo';
+				import relParent1 from '../foo';
 				import relParent2, {foo2} from '../foo/bar';
 
 				import relParent3 from '@shared';
@@ -55,6 +55,67 @@ ruleTester.run('order', rule, {
 				},
 			],
 		}),
+		test({
+			code: `
+				import async, {foo1} from 'async';
+				import fs from 'fs';
+
+				import relParent3 from '@shared';
+
+				import relParent1 from '../foo';
+				import relParent2, {foo2} from '../foo/bar';
+				import index from './';
+				import sibling, {foo3} from './foo';`,
+			options: [
+				{
+					groups: [['module'], '/@shared/', ['parent', 'sibling', 'index']],
+					sort: { orderBy: [{ type: 'name' }], ignoreCase: true },
+					newlinesBetween: 'always',
+				},
+			],
+		}),
+		test({
+			code: `
+				import async, {foo1} from 'async';
+				import fs from 'fs';
+
+				import relParent3 from '@shared';
+
+				import relParent1 from '../foo';
+				import relParent2, {foo2} from '../foo/bar';
+				import index from './';
+				import sibling, {foo3} from './foo';`,
+			options: [
+				{
+					groups: [['module'], '/@shared/', ['parent', 'sibling', 'index']],
+					sort: { orderBy: [ 'name' ], ignoreCase: true },
+					newlinesBetween: 'always',
+				},
+			],
+		}),
+		/* TODO: still working on this
+		test({
+			code: `
+				import async, {foo1} from 'async';
+				import fs from 'fs';
+
+				import relParent3 from '@shared/a';
+				import type { sharedType } from '@shared/b';
+				import { sharedType } from '@shared/c';
+
+				import relParent1 from '../foo';
+				import relParent2, {foo2} from '../foo/bar';
+				import index from './';
+				import sibling, {foo3} from './foo';`,
+			options: [
+				{
+					groups: [['module'], '/@shared/', ['parent', 'sibling', 'index']],
+					sort: { orderBy: [ 'name' ], ignoreCase: true },
+					newlinesBetween: 'always',
+				},
+			]
+		}),
+		*/
 		test({
 			code: `
 				import fs from 'fs';
